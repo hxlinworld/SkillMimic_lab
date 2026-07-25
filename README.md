@@ -164,39 +164,43 @@ Pass `--checkpoint <path>` to resume a checkpoint produced by this Isaac Lab
 training path. The released Isaac Gym checkpoints are supported for inference,
 but their optimizer state cannot be resumed.
 
-## Logs and TensorBoard
+## Training Monitoring
 
-The launcher records the latest terminal stream in
-`logs/isaaclab/latest.log`. In the current workspace, this corresponds to:
+Every launcher command mirrors its console output to
+`logs/isaaclab/latest.log`. The file is overwritten when a new command starts,
+so it always contains the output from the most recent run. In the current
+workspace, its path is:
 
 ```text
 character_control/SkillMimic/logs/isaaclab/latest.log
 ```
 
-The file is replaced on each launch. Follow it from the repository root with:
+Monitor the active run from the repository root with:
 
 ```bash
 tail -f logs/isaaclab/latest.log
 ```
 
-RL-Games checkpoints and TensorBoard events are stored in `logs/rl_games/`
-(`character_control/SkillMimic/logs/rl_games/` in the current workspace).
+During training, RL-Games saves checkpoints and TensorBoard event files under
+`logs/rl_games/<task>_isaaclab/<run>/`. The launcher automatically starts a
+TensorBoard server for `logs/rl_games/` on port 6006.
 
-The launcher starts TensorBoard automatically on port 6006. On the training
-machine, open:
+If training runs on the local machine, open:
 
 ```text
 http://localhost:6006
 ```
 
-For training on a remote server, create an SSH tunnel from the local computer:
+If training runs on a remote server, create an SSH tunnel from the local
+computer:
 
 ```bash
 ssh -N -L 6006:127.0.0.1:6006 <user>@<server>
 ```
 
-Then open `http://localhost:6006` locally. Set `TENSORBOARD_PORT` to use another
-port or `TENSORBOARD_LOG_DIR` to use another event directory.
+Keep the tunnel open and visit `http://localhost:6006` in the local browser.
+Use `TENSORBOARD_PORT` or `TENSORBOARD_LOG_DIR` to override the default port or
+event directory.
 
 ## Notes
 
