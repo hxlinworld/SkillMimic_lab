@@ -83,6 +83,11 @@ ends with:
 [SkillMimic Lab] PASS mode=smoke task=ballplay
 ```
 
+## Pre-Trained Models
+
+Pre-trained models are available at
+[`skillmimic/data/models/`](skillmimic/data/models/).
+
 ## Skill Policy
 
 ### Inference
@@ -118,6 +123,36 @@ NUM_ENVS=2048 bash scripts/run_isaaclab.sh train \
 `NUM_ENVS` controls the number of parallel environments. `--motion_path`
 selects either one `.pt` motion file or a directory, and `--max_iterations`
 sets the total RL-Games training iterations.
+
+Training settings:
+
+- **Environment:** [`skillmimic_lab/env/tasks/`](skillmimic_lab/env/tasks/)
+- **PPO:** [`skillmimic_lab/agents/rl_games_ppo_cfg.yaml`](skillmimic_lab/agents/rl_games_ppo_cfg.yaml)
+- **Motion data:** `--motion_path <file-or-directory>`
+- **Visualization:** disabled by default; set `HEADLESS=0` to enable it
+
+- It is strongly encouraged to use large "--num_envs" when training on a large dataset, e.g., use "NUM_ENVS=16384" for `--motion_path skillmimiclab/data/motions/BallPlay-M` (Meanwhile, `--minibatch_size` is recommended to be set as 8×`num_envs`)
+
+```bash
+NUM_ENVS=16384 bash scripts/run_isaaclab.sh train \
+  --motion_path skillmimiclab/data/motions/BallPlay-M \
+  --minibatch_size 131072
+```
+
+Training output:
+
+- The best skill-policy checkpoint (`skillmimic_isaaclab.pth`) and periodic
+  checkpoints are saved to `logs/rl_games/<task>_isaaclab/<run>/nn/`.
+- TensorBoard events are saved to the adjacent `summaries/` directory. The
+  launcher starts TensorBoard at `http://localhost:6006`.
+- The latest terminal output is saved to `logs/isaaclab/latest.log`; follow it
+  with `tail -f logs/isaaclab/latest.log`.
+
+For remote training, forward TensorBoard to the local machine:
+
+```bash
+ssh -N -L 6006:127.0.0.1:6006 <user>@<server>
+```
 
 ## High-Level Controller
 
@@ -156,44 +191,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 NUM_GPUS=4 NUM_ENVS=4096 \
 Pass `--checkpoint <path>` to resume a checkpoint produced by this Isaac Lab
 training path. The released Isaac Gym checkpoints are supported for inference,
 but their optimizer state cannot be resumed.
-
-## Training Monitoring
-
-Every launcher command mirrors its console output to
-`logs/isaaclab/latest.log`. The file is overwritten when a new command starts,
-so it always contains the output from the most recent run. In the current
-workspace, its path is:
-
-```text
-character_control/SkillMimic/logs/isaaclab/latest.log
-```
-
-Monitor the active run from the repository root with:
-
-```bash
-tail -f logs/isaaclab/latest.log
-```
-
-During training, RL-Games saves checkpoints and TensorBoard event files under
-`logs/rl_games/<task>_isaaclab/<run>/`. The launcher automatically starts a
-TensorBoard server for `logs/rl_games/` on port 6006.
-
-If training runs on the local machine, open:
-
-```text
-http://localhost:6006
-```
-
-If training runs on a remote server, create an SSH tunnel from the local
-computer:
-
-```bash
-ssh -N -L 6006:127.0.0.1:6006 <user>@<server>
-```
-
-Keep the tunnel open and visit `http://localhost:6006` in the local browser.
-Use `TENSORBOARD_PORT` or `TENSORBOARD_LOG_DIR` to override the default port or
-event directory.
 
 ## Notes
 
