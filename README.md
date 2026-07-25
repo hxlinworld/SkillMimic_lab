@@ -148,11 +148,6 @@ Training output:
 - The latest terminal output is saved to `logs/isaaclab/latest.log`; follow it
   with `tail -f logs/isaaclab/latest.log`.
 
-For remote training, forward TensorBoard to the local machine:
-
-```bash
-ssh -N -L 6006:127.0.0.1:6006 <user>@<server>
-```
 
 ## High-Level Controller
 
