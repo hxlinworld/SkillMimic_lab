@@ -4,6 +4,15 @@
 Official code release for the following paper:
 "**SkillMimic: Learning Basketball Interaction Skills from Demonstrations**"
 
+> **Isaac Lab migration:** the original Isaac Gym source is preserved locally
+> under `backups/`, while the dependency-free Isaac Lab runtime is in
+> `skillmimic_lab/`. The port targets Python 3.10, Isaac Sim 4.1, Isaac Lab 1.1,
+> and PyTorch 2.2.2 with CUDA 11.8. With that environment active, start
+> with `bash scripts/run_isaaclab.sh smoke`. See
+> [ISAACLAB_README.md](ISAACLAB_README.md) for inference and training
+> commands for the skill policy and all four high-level tasks. The script does
+> not install packages or change PyTorch.
+
 ![image](https://github.com/user-attachments/assets/ac75c9be-f144-4b6d-980f-272c6f657627)
 We propose a novel approach that enables physically simulated humanoids to learn a variety of basketball skills purely from human demonstrations, such as
 shooting (blue), retrieving (red), and turnaround layup (yellow). Once acquired, these skills can be reused and combined to accomplish complex tasks, such as

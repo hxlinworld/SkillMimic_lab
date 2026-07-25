@@ -40,3 +40,12 @@ skillmimic/env/tasks/skillmimic.BAK.py
 tt.ipynb
 
 skillmimic/data/images/
+# Local Isaac Lab checkout and generated training output.
+.external/
+logs/
+
+# Local editor state, test caches, and migration backups.
+.vscode/
+.idea/
+.pytest_cache/
+backups/
