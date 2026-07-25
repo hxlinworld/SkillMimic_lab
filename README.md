@@ -7,133 +7,206 @@
 [Video](https://youtu.be/j1smsXilUGM)
 
 > [!IMPORTANT]
-> **This repository ports SkillMimic from Isaac Gym to Isaac Lab.** It uses
-> Isaac Sim 4.1 and Isaac Lab 1.1 while retaining the released BallPlay-M
-> motions and pretrained checkpoints.
+> **This repository provides an Isaac Lab implementation of SkillMimic.** It
+> implements the SkillMimic skill policy and high-level controllers with Isaac
+> Sim 4.1 and Isaac Lab 1.1, while reusing the released BallPlay-M motions and
+> pretrained checkpoints.
 
 ![SkillMimic basketball skills](https://github.com/user-attachments/assets/ac75c9be-f144-4b6d-980f-272c6f657627)
 
-The port is in `skillmimic_lab/`. The original Isaac Gym code and assets remain
-in `skillmimic/`.
+The Isaac Lab implementation is in `skillmimic_lab/`. The original Isaac Gym
+code and assets remain in `skillmimic/`.
 
-## Setup
+## Installation
 
-Required versions: Python 3.10, Isaac Sim 4.1.0 standalone, Isaac Lab v1.1.0,
-PyTorch 2.2.2 with CUDA 11.8, and RL-Games 1.6.1.
+### Step 1: clone this repository
 
-Place Isaac Sim and Isaac Lab under the ignored `.external/` directory:
+```bash
+git clone https://github.com/hxlinworld/SkillMimic_lab.git
+cd SkillMimic_lab
+```
+
+### Step 2: download Isaac Sim 4.1.0 and Isaac Lab 1.1
+
+The following command downloads the official 7.8 GB Linux standalone archive
+listed in the
+[NVIDIA Isaac Sim download archive](https://docs.isaacsim.omniverse.nvidia.com/4.5.0/installation/download.html#download-archive):
+
+```bash
+mkdir -p .external/isaac-sim-4.1.0
+wget -c \
+  "https://download.isaacsim.omniverse.nvidia.com/isaac-sim-standalone%404.1.0-rc.7%2B4.1.14801.71533b68.gl.linux-x86_64.release.zip" \
+  -O .external/isaac-sim-4.1.0.zip
+unzip -q .external/isaac-sim-4.1.0.zip \
+  -d .external/isaac-sim-4.1.0
+```
+
+Clone the matching Isaac Lab release:
+
+```bash
+git clone --branch v1.1.0 --depth 1 \
+  https://github.com/isaac-sim/IsaacLab.git .external/IsaacLab
+```
+
+The resulting local layout is:
 
 ```text
 .external/isaac-sim-4.1.0/
 .external/IsaacLab/
 ```
 
-```bash
-mkdir -p .external
-git clone --branch v1.1.0 https://github.com/isaac-sim/IsaacLab.git .external/IsaacLab
+### Step 3: create the Python environment
 
+```bash
 conda create -n skillmimic_lab python=3.10
 conda activate skillmimic_lab
 pip install -r requirements_isaaclab.txt
 ```
 
-Extract the Isaac Sim standalone package to `.external/isaac-sim-4.1.0/`. If
-it is installed elsewhere, set `ISAAC_SIM_ROOT`. Do not install the original
-`requirements.txt` in this environment.
+This setup uses Python 3.10, PyTorch 2.2.2 with CUDA 11.8, and RL-Games 1.6.1.
+If Isaac Sim is installed at another location, set `ISAAC_SIM_ROOT` before
+running the launcher.
 
-## Run
+## Verify the Environment
 
-Validate the environment, then run the released skill policy:
+Run the headless smoke test before inference or training:
 
 ```bash
 bash scripts/run_isaaclab.sh smoke
-bash scripts/run_isaaclab.sh play
 ```
 
-The smoke test succeeds when it prints:
+The command creates four environments, applies zero actions for 600 simulation
+steps, and checks observations and rewards for invalid values. A successful run
+ends with:
 
 ```text
 [SkillMimic Lab] PASS mode=smoke task=ballplay
 ```
 
-Available policy modes are:
+## Skill Policy
 
-| Task | Inference | Training |
-| --- | --- | --- |
-| Skill policy | `play` | `train` |
-| Circling | `circling` | `train-circling` |
-| Heading | `heading` | `train-heading` |
-| Throwing | `throwing` | `train-throwing` |
-| Scoring | `scoring` | `train-scoring` |
+### Inference
 
-For example:
+Run the released mixed-skills policy with its default checkpoint and BallPlay-M
+motion directory:
 
 ```bash
-NUM_ENVS=1 bash scripts/run_isaaclab.sh scoring
+bash scripts/run_isaaclab.sh play
 ```
 
-The launcher is headless by default. Use a local viewer only on a machine with
-a graphical display:
+To select a motion, checkpoint, number of environments, and rollout length
+explicitly:
+
+```bash
+NUM_ENVS=16 STEPS=140 bash scripts/run_isaaclab.sh play \
+  --motion_path skillmimic/data/motions/BallPlay-M/layup \
+  --checkpoint skillmimic/data/models/mixedskills/nn/skillmimic_llc.pth \
+  --state_init 20 \
+  --episode_length 140
+```
+
+Inference is headless by default. On a local machine with a graphical display,
+run one environment with the viewer enabled:
 
 ```bash
 HEADLESS=0 NUM_ENVS=1 bash scripts/run_isaaclab.sh play
 ```
 
-## Train
+### Training
+
+Train the skill policy from demonstrations:
 
 ```bash
 NUM_ENVS=2048 bash scripts/run_isaaclab.sh train \
   --motion_path skillmimic/data/motions/BallPlay-M/layup \
   --max_iterations 50000
+```
 
+`NUM_ENVS` controls the number of parallel environments. `--motion_path`
+selects either one `.pt` motion file or a directory, and `--max_iterations`
+sets the total RL-Games training iterations.
+
+## High-Level Controller
+
+### Inference
+
+The released controllers and their required low-level policy are selected by
+the launcher:
+
+```bash
+NUM_ENVS=1 bash scripts/run_isaaclab.sh circling
+NUM_ENVS=1 bash scripts/run_isaaclab.sh heading
+NUM_ENVS=1 bash scripts/run_isaaclab.sh throwing
+NUM_ENVS=1 bash scripts/run_isaaclab.sh scoring
+```
+
+### Training
+
+```bash
+NUM_ENVS=2048 bash scripts/run_isaaclab.sh train-circling \
+  --max_iterations 6000
+NUM_ENVS=2048 bash scripts/run_isaaclab.sh train-heading \
+  --max_iterations 6000
+NUM_ENVS=2048 bash scripts/run_isaaclab.sh train-throwing \
+  --max_iterations 6000
 NUM_ENVS=2048 bash scripts/run_isaaclab.sh train-scoring \
   --max_iterations 6000
 ```
 
-Arguments after the mode are forwarded to the Python entry point. For multiple
-GPUs, set `NUM_GPUS`; `NUM_ENVS` is the number of environments per GPU:
+For distributed training, `NUM_ENVS` is the number of environments per GPU:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 NUM_GPUS=4 NUM_ENVS=4096 \
   bash scripts/run_isaaclab.sh train --max_iterations 50000
 ```
 
-Use `--checkpoint` to resume an Isaac Lab training run. Released Isaac Gym
-checkpoints support inference, but their optimizer state cannot be resumed.
+Pass `--checkpoint <path>` to resume a checkpoint produced by this Isaac Lab
+training path. The released Isaac Gym checkpoints are supported for inference,
+but their optimizer state cannot be resumed.
 
-## Configuration
+## Logs and TensorBoard
 
-| Variable | Default | Meaning |
-| --- | ---: | --- |
-| `NUM_ENVS` | 4 inference, 2048 training | Environments per GPU |
-| `NUM_GPUS` | 1 | Training processes and GPUs |
-| `STEPS` | 600 | Inference steps |
-| `HEADLESS` | 1 | Set to 0 for a local viewer |
-| `DEVICE_ID` | 0 | CUDA device |
-| `ISAAC_SIM_ROOT` | `.external/isaac-sim-4.1.0` | Isaac Sim path |
+The launcher records the latest terminal stream in
+`logs/isaaclab/latest.log`. In the current workspace, this corresponds to:
 
-Training output and TensorBoard events are written below `logs/`, which is
-excluded from Git. TensorBoard uses `http://localhost:6006` by default.
+```text
+character_control/SkillMimic/logs/isaaclab/latest.log
+```
+
+The file is replaced on each launch. Follow it from the repository root with:
+
+```bash
+tail -f logs/isaaclab/latest.log
+```
+
+RL-Games checkpoints and TensorBoard events are stored in `logs/rl_games/`
+(`character_control/SkillMimic/logs/rl_games/` in the current workspace).
+
+The launcher starts TensorBoard automatically on port 6006. On the training
+machine, open:
+
+```text
+http://localhost:6006
+```
+
+For training on a remote server, create an SSH tunnel from the local computer:
+
+```bash
+ssh -N -L 6006:127.0.0.1:6006 <user>@<server>
+```
+
+Then open `http://localhost:6006` locally. Set `TENSORBOARD_PORT` to use another
+port or `TENSORBOARD_LOG_DIR` to use another event directory.
 
 ## Notes
 
 - Released motions and checkpoints under `skillmimic/data/` load directly;
   no conversion step is required.
-- The port converts legacy XYZW quaternions to Isaac Lab's WXYZ convention only
-  at the simulator boundary.
+- Legacy XYZW quaternions are converted to Isaac Lab's WXYZ convention only at
+  the simulator boundary.
 - Keyboard skill switching, mouse target placement, `--play_dataset`, and
   `--save_images` remain available only in the
   [original Isaac Gym implementation](skillmimic/README.md).
-
-## Tests
-
-```bash
-python -m unittest tests.test_isaaclab_compat
-bash -n scripts/run_isaaclab.sh
-python -m compileall -q skillmimic_lab tests
-```
-
-For simulator startup failures, inspect `logs/isaaclab/latest.log`.
 
 ## Citation
 
