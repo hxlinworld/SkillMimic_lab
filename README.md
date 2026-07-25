@@ -69,7 +69,7 @@ running the launcher.
 
 ## Verify the Environment
 
-Run the headless smoke test before inference or training:
+Run the smoke test before inference or training:
 
 ```bash
 bash scripts/run_isaaclab.sh smoke
@@ -103,13 +103,6 @@ NUM_ENVS=16 STEPS=140 bash scripts/run_isaaclab.sh play \
   --checkpoint skillmimic/data/models/mixedskills/nn/skillmimic_llc.pth \
   --state_init 20 \
   --episode_length 140
-```
-
-Inference is headless by default. On a local machine with a graphical display,
-run one environment with the viewer enabled:
-
-```bash
-HEADLESS=0 NUM_ENVS=1 bash scripts/run_isaaclab.sh play
 ```
 
 ### Training
