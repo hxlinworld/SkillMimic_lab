@@ -9,7 +9,7 @@
 > [!IMPORTANT]
 > **This repository provides an Isaac Lab implementation of SkillMimic.** It
 > implements the SkillMimic skill policy and high-level controllers with Isaac
-> Sim 4.1 and Isaac Lab 1.1, while reusing the released BallPlay-M motions and
+> Sim 5.1 and Isaac Lab 2.3.2, while reusing the released BallPlay-M motions and
 > pretrained checkpoints.
 
 ![SkillMimic basketball skills](https://github.com/user-attachments/assets/ac75c9be-f144-4b6d-980f-272c6f657627)
@@ -26,46 +26,26 @@ git clone https://github.com/hxlinworld/SkillMimic_lab.git
 cd SkillMimic_lab
 ```
 
-### Step 2: download Isaac Sim 4.1.0 and Isaac Lab 1.1
+### Step 2: use the NVIDIA Isaac Lab container
 
-The following command downloads the official 7.8 GB Linux standalone archive
-listed in the
-[NVIDIA Isaac Sim download archive](https://docs.isaacsim.omniverse.nvidia.com/4.5.0/installation/download.html#download-archive):
-
-```bash
-mkdir -p .external/isaac-sim-4.1.0
-wget -c \
-  "https://download.isaacsim.omniverse.nvidia.com/isaac-sim-standalone%404.1.0-rc.7%2B4.1.14801.71533b68.gl.linux-x86_64.release.zip" \
-  -O .external/isaac-sim-4.1.0.zip
-unzip -q .external/isaac-sim-4.1.0.zip \
-  -d .external/isaac-sim-4.1.0
-```
-
-Clone the matching Isaac Lab release:
+Install Docker, the NVIDIA Container Toolkit, and an NVIDIA driver supported by
+Isaac Sim 5.1, then pull the matching pre-built Isaac Lab image once:
 
 ```bash
-git clone --branch v1.1.0 --depth 1 \
-  https://github.com/isaac-sim/IsaacLab.git .external/IsaacLab
+docker pull nvcr.io/nvidia/isaac-lab:2.3.2
+docker run --rm --gpus all --entrypoint nvidia-smi \
+  nvcr.io/nvidia/isaac-lab:2.3.2
 ```
 
-The resulting local layout is:
+The launcher uses that image directly, bind-mounts this checkout at
+`/workspace/skillmimic-lab`, and keeps simulator caches in
+`.docker/isaaclab/`. If the current user cannot access the Docker socket, it
+automatically falls back to `sudo -n docker`.
 
-```text
-.external/isaac-sim-4.1.0/
-.external/IsaacLab/
-```
-
-### Step 3: create the Python environment
-
-```bash
-conda create -n skillmimic_lab python=3.10
-conda activate skillmimic_lab
-pip install -r requirements_isaaclab.txt
-```
-
-This setup uses Python 3.10, PyTorch 2.2.2 with CUDA 11.8, and RL-Games 1.6.1.
-If Isaac Sim is installed at another location, set `ISAAC_SIM_ROOT` before
-running the launcher.
+No Conda environment or host-side `pip install` is required. The image provides
+Python 3.11, PyTorch 2.7 with CUDA 12.8, RL-Games 1.6.1, Isaac Sim 5.1, and
+Isaac Lab 2.3.2. `requirements_isaaclab.txt` is intentionally empty so legacy
+pins cannot overwrite the image runtime.
 
 ## Verify the Environment
 
@@ -120,22 +100,49 @@ NUM_ENVS=2048 bash scripts/run_isaaclab.sh train \
   --max_iterations 50000
 ```
 
+### WebRTC training
+
+WebRTC must be enabled in the training process itself. Stop any standalone
+Isaac Sim streaming container that is using port 49100, then launch:
+
+```bash
+PUBLIC_IP=<server-public-ip> NUM_ENVS=1024 \
+  bash scripts/run_isaaclab.sh train-webrtc \
+  --motion_path skillmimic/data/motions/BallPlay-M/layup \
+  --minibatch_size 8192 \
+  --max_iterations 50000
+```
+
+The launcher enables Isaac Lab's public-network WebRTC mode and passes TCP
+49100 and UDP 47998 through host networking. As a local convenience,
+`PUBLIC_IP` may instead be stored as the first line of
+`.docker/webrtc_public_ip`. Only one WebRTC client can connect at a time, and
+viewport rendering reduces training throughput.
+
 `NUM_ENVS` controls the number of parallel environments. `--motion_path`
 selects either one `.pt` motion file or a directory, and `--max_iterations`
 sets the total RL-Games training iterations.
+
+Training containers use the stable name
+`skillmimic-<environment>-seed-<seed>`. If `--seed` is omitted, the launcher
+generates a random positive seed and passes it to the training process. By
+default, a second container for an environment that is already training is
+rejected. Set `ALLOW_PARALLEL_TRAINING=1` only when parallel runs with
+different seeds are intentional; pass `--seed 43` to reproduce a known run.
 
 Training settings:
 
 - **Environment:** [`skillmimic_lab/env/tasks/`](skillmimic_lab/env/tasks/)
 - **PPO:** [`skillmimic_lab/agents/rl_games_ppo_cfg.yaml`](skillmimic_lab/agents/rl_games_ppo_cfg.yaml)
 - **Motion data:** `--motion_path <file-or-directory>`
-- **Visualization:** disabled by default; set `HEADLESS=0` to enable it
+- **Visualization:** the pre-built Isaac Lab image is intended for headless use
 
-- It is strongly encouraged to use large "--num_envs" when training on a large dataset, e.g., use "NUM_ENVS=16384" for `--motion_path skillmimiclab/data/motions/BallPlay-M` (Meanwhile, `--minibatch_size` is recommended to be set as 8×`num_envs`)
+For large datasets, use many parallel environments and set the minibatch size
+to roughly eight times `NUM_ENVS`, subject to available GPU memory:
 
 ```bash
 NUM_ENVS=16384 bash scripts/run_isaaclab.sh train \
-  --motion_path skillmimiclab/data/motions/BallPlay-M \
+  --motion_path skillmimic/data/motions/BallPlay-M \
   --minibatch_size 131072
 ```
 
@@ -147,6 +154,10 @@ Training output:
   launcher starts TensorBoard at `http://localhost:6006`.
 - The latest terminal output is saved to `logs/isaaclab/latest.log`; follow it
   with `tail -f logs/isaaclab/latest.log`.
+- Each epoch prints a `[training-diagnostics]` line. Fall and timeout rates are
+  calculated over completed episodes; action mean/standard deviation and
+  periodic joint-tracking RMSE are sampled every environment step and then
+  aggregated over the epoch.
 
 
 ## High-Level Controller

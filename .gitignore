@@ -42,6 +42,8 @@ tt.ipynb
 skillmimic/data/images/
 # Local Isaac Lab checkout and generated training output.
 .external/
+.docker/
+${data}/
 logs/
 
 # Local editor state, test caches, and migration backups.

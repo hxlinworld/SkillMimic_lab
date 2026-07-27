@@ -1,7 +1,7 @@
 """Minimal Isaac Lab to RL-Games vector-environment adapter.
 
 This project registers only its own DirectRLEnv tasks, so importing the full
-``omni.isaac.lab_tasks`` package is unnecessary.  In Isaac Lab 1.1 that import
+``isaaclab_tasks`` package is unnecessary. That import
 also eagerly imports every bundled task and all of their optional agent
 libraries.  Keeping the small adapter local avoids unrelated dependencies such
 as RSL-RL while preserving the interface expected by RL-Games 1.6.1.
@@ -16,7 +16,7 @@ import torch
 from rl_games.common import env_configurations
 from rl_games.common.vecenv import IVecEnv
 
-from omni.isaac.lab.envs import DirectRLEnv
+from isaaclab.envs import DirectRLEnv
 
 
 class RlGamesVecEnvWrapper(IVecEnv):

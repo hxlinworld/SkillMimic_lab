@@ -7,7 +7,7 @@ import argparse
 import os
 import traceback
 
-from omni.isaac.lab.app import AppLauncher
+from isaaclab.app import AppLauncher
 
 from skillmimic_lab.kit_runtime import configure_kit_runtime
 
@@ -26,7 +26,7 @@ HLC_CHECKPOINTS = {
 }
 
 parser = argparse.ArgumentParser(description="Run the Isaac Lab SkillMimic BallPlay migration")
-parser.add_argument("--mode", choices=("smoke", "play"), default="smoke")
+parser.add_argument("--mode", choices=("smoke", "play", "reference"), default="smoke")
 parser.add_argument("--task", choices=("ballplay", "circling", "heading", "throwing", "scoring"), default="ballplay")
 parser.add_argument("--num_envs", type=int, default=4)
 parser.add_argument("--steps", type=int, default=600)
@@ -98,6 +98,7 @@ def main() -> None:
     _log_phase("building_config")
     cfg = SkillMimicBallPlayEnvCfg() if args.task == "ballplay" else HLC_CONFIGS[args.task]()
     cfg.scene.num_envs = args.num_envs
+    cfg.seed = args.seed
     if args.motion_path is not None:
         cfg.motion_path = os.path.abspath(args.motion_path)
     if args.state_init is not None:
@@ -109,18 +110,23 @@ def main() -> None:
             raise ValueError("--episode_length must be positive")
         cfg.episode_length_s = args.episode_length / 60.0
     if args.task != "ballplay":
+        if args.mode == "reference":
+            raise ValueError("--mode reference is only available for the ballplay task")
         cfg.llc_checkpoint = os.path.abspath(args.llc_checkpoint)
-    # Isaac Lab v1.1 exposes --device_id; newer releases may expose --device.
+    elif args.mode == "reference":
+        # A fixed horizon makes the actuator probe comparable across runs and
+        # lets it measure tracking after a fall instead of immediately sampling
+        # a new pose. Natural motion timeouts still reset the environment.
+        cfg.early_termination = False
     # Keep the environment tensors on the same GPU selected by AppLauncher for
     # PhysX and rendering.
-    device = getattr(args, "device", None)
-    if device is None:
-        device = f"cuda:{getattr(args, 'device_id', 0)}"
-    cfg.sim.device = device
+    cfg.sim.device = args.device
 
     _log_phase(f"creating_environment task={args.task} num_envs={args.num_envs} device={cfg.sim.device}")
     env = SkillMimicBallPlayEnv(cfg=cfg) if args.task == "ballplay" else SkillMimicHLCEnv(cfg=cfg)
     _log_phase("environment_created")
+    if args.mode == "reference":
+        env.print_physics_parameter_report()
     policy = None
     if args.mode == "play":
         checkpoint = args.checkpoint or (DEFAULT_CHECKPOINT if args.task == "ballplay" else HLC_CHECKPOINTS[args.task])
@@ -137,12 +143,17 @@ def main() -> None:
         observations, _ = env.reset(seed=args.seed)
         _log_phase("environment_reset_complete; stepping")
         total_reward = torch.zeros(env.num_envs, device=env.device)
+        tracking_squared_error = torch.zeros(156, device=env.device)
+        tracking_absolute_error = torch.zeros(156, device=env.device)
+        tracking_samples = 0
         completed_steps = 0
         while simulation_app.is_running() and completed_steps < args.steps:
             policy_obs = observations["policy"]
             if not torch.isfinite(policy_obs).all():
                 raise FloatingPointError(f"Non-finite policy observation at step {completed_steps}")
-            if policy is None:
+            if args.mode == "reference":
+                actions = env.reference_actions()
+            elif policy is None:
                 if args.task == "ballplay":
                     actions = torch.zeros((env.num_envs, 156), device=env.device)
                 else:
@@ -156,12 +167,36 @@ def main() -> None:
                 raise FloatingPointError(f"Non-finite reward at step {completed_steps}")
             total_reward += reward
             completed_steps += 1
+            if args.mode == "reference":
+                tracking_error = env.reference_tracking_error()
+                tracking_squared_error += tracking_error.square().sum(dim=0)
+                tracking_absolute_error += tracking_error.abs().sum(dim=0)
+                tracking_samples += tracking_error.shape[0]
             if completed_steps == 1 or completed_steps % 100 == 0:
                 resets = int(torch.count_nonzero(terminated | truncated))
                 print(
                     f"[SkillMimic Lab] step={completed_steps} "
                     f"reward_mean={reward.mean().item():.6f} resets={resets}"
                 )
+        if args.mode == "reference" and tracking_samples > 0:
+            joint_rmse = torch.sqrt(tracking_squared_error / tracking_samples)
+            joint_mae = tracking_absolute_error / tracking_samples
+            overall_rmse = torch.sqrt(tracking_squared_error.sum() / (tracking_samples * 156))
+            worst_ids = torch.topk(joint_rmse, k=10).indices
+            joint_names = [
+                env.robot.data.joint_names[env._joint_ids_legacy_order[index]]
+                for index in worst_ids.cpu().tolist()
+            ]
+            worst = ", ".join(
+                f"{name}:rmse={joint_rmse[index].item():.6f},mae={joint_mae[index].item():.6f}rad"
+                for name, index in zip(joint_names, worst_ids.cpu().tolist())
+            )
+            print(
+                "[SkillMimic Lab][reference-tracking] "
+                f"samples={tracking_samples} overall_rmse={overall_rmse.item():.6f}rad "
+                f"worst=[{worst}]",
+                flush=True,
+            )
         print(
             f"[SkillMimic Lab] PASS mode={args.mode} task={args.task} "
             f"envs={env.num_envs} steps={completed_steps} "

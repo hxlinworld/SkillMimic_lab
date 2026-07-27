@@ -26,6 +26,10 @@ def configure_kit_runtime(*, disable_ngx: bool = False) -> str:
         # Physics-only headless runs do not use DLSS. Avoid initializing NGX,
         # which is part of the Vulkan startup path on older Kit releases.
         sys.argv.append("--/ngx/enabled=false")
+    # Sim 5.1's MJCF importer emits one harmless warning per drive axis while
+    # it converts the legacy hinge stack. Isaac Lab reapplies those gains via
+    # the articulation tensor API, so keep errors but suppress that flood.
+    sys.argv.append("--/log/channels/omni.physx.plugin=error")
 
     kit_log_dir = os.environ.get("SKILLMIMIC_KIT_LOG_DIR")
     if kit_log_dir is not None:

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import os
 
-import gymnasium as gym
 import torch
 
-from omni.isaac.lab.utils import configclass
+from isaaclab.utils import configclass
 
 from skillmimic_lab.utils import torch_utils as math_utils
 from .skillmimic import (
@@ -31,8 +30,8 @@ THROW_MOTIONS = os.path.join(PROJECT_ROOT, "skillmimic", "data", "motions", "Bal
 class SkillMimicHLCEnvCfg(SkillMimicBallPlayEnvCfg):
     episode_length_s = 800.0 / 60.0
     decimation = 3
-    num_observations = 838
-    num_actions = 3
+    observation_space = 838
+    action_space = {3}
     state_init = 2
     task_name = "throwing"
     task_observation_size = 0
@@ -46,8 +45,8 @@ class SkillMimicHLCEnvCfg(SkillMimicBallPlayEnvCfg):
 
 @configclass
 class SkillMimicCirclingEnvCfg(SkillMimicHLCEnvCfg):
-    num_observations = 843
-    num_actions = 3
+    observation_space = 843
+    action_space = {3}
     task_name = "circling"
     task_observation_size = 5
     control_mapping = (12, 13, 11)
@@ -56,8 +55,8 @@ class SkillMimicCirclingEnvCfg(SkillMimicHLCEnvCfg):
 
 @configclass
 class SkillMimicHeadingEnvCfg(SkillMimicHLCEnvCfg):
-    num_observations = 842
-    num_actions = 3
+    observation_space = 842
+    action_space = {3}
     task_name = "heading"
     task_observation_size = 4
     control_mapping = (12, 13, 11)
@@ -66,8 +65,8 @@ class SkillMimicHeadingEnvCfg(SkillMimicHLCEnvCfg):
 
 @configclass
 class SkillMimicThrowingEnvCfg(SkillMimicHLCEnvCfg):
-    num_observations = 838
-    num_actions = 3
+    observation_space = 838
+    action_space = {3}
     task_name = "throwing"
     task_observation_size = 0
     control_mapping = (34, 1, 13)
@@ -76,8 +75,8 @@ class SkillMimicThrowingEnvCfg(SkillMimicHLCEnvCfg):
 
 @configclass
 class SkillMimicScoringEnvCfg(SkillMimicHLCEnvCfg):
-    num_observations = 843
-    num_actions = 7
+    observation_space = 843
+    action_space = {7}
     task_name = "scoring"
     task_observation_size = 5
     control_mapping = (31, 1, 2, 12, 13, 11, 31)
@@ -97,13 +96,6 @@ class SkillMimicHLCEnv(SkillMimicBallPlayEnv):
         self.goal_position = torch.zeros((self.num_envs, 2), device=self.device)
         self.goal_radius = torch.zeros((self.num_envs, 1), device=self.device)
         self.reached_target = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
-
-    def _configure_gym_env_spaces(self) -> None:
-        """Expose the legacy HLC as a discrete space on Isaac Lab 1.1."""
-
-        super()._configure_gym_env_spaces()
-        self.single_action_space = gym.spaces.Discrete(len(self.cfg.control_mapping))
-        self.action_space = gym.vector.utils.batch_space(self.single_action_space, self.num_envs)
 
     def _physical_observations(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         body_pos, body_rot, body_vel, body_ang_vel = self._local_body_state()
@@ -134,9 +126,9 @@ class SkillMimicHLCEnv(SkillMimicBallPlayEnv):
         else:
             task = physical[:, :0]
         observation = torch.cat((physical, task), dim=-1)
-        if observation.shape[-1] != self.cfg.num_observations:
+        if observation.shape[-1] != self.cfg.observation_space:
             raise RuntimeError(
-                f"{self.cfg.task_name} observation must be {self.cfg.num_observations}-D, got {observation.shape}"
+                f"{self.cfg.task_name} observation must be {self.cfg.observation_space}-D, got {observation.shape}"
             )
         return {"policy": observation}
 

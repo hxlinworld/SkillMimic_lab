@@ -1,0 +1,12 @@
+.git
+.docker
+.external
+logs
+output
+runs
+tb_logs
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.vscode
+.idea

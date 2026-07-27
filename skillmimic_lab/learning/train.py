@@ -10,7 +10,7 @@ import os
 import traceback
 from datetime import datetime
 
-from omni.isaac.lab.app import AppLauncher
+from isaaclab.app import AppLauncher
 
 from skillmimic_lab.kit_runtime import configure_kit_runtime
 
@@ -98,11 +98,33 @@ class SkillMimicAlgoObserver(IsaacAlgoObserver):
         "object",
         "total",
     )
+    DIAGNOSTIC_MEANS = (
+        "action_mean",
+        "action_std",
+        "joint_tracking_rmse",
+    )
+    TERMINATION_COUNTS = (
+        "completed_count",
+        "fall_count",
+        "timeout_count",
+        "other_failure_count",
+    )
 
     def after_init(self, algo) -> None:
         super().after_init(algo)
         self._reward_term_sums = {name: 0.0 for name in self.REWARD_TERMS}
         self._reward_term_counts = {name: 0 for name in self.REWARD_TERMS}
+        self._diagnostic_sums = {name: 0.0 for name in self.DIAGNOSTIC_MEANS}
+        self._diagnostic_counts = {name: 0 for name in self.DIAGNOSTIC_MEANS}
+        self._termination_counts = {name: 0.0 for name in self.TERMINATION_COUNTS}
+
+    @staticmethod
+    def _finite_scalar(value) -> float | None:
+        if isinstance(value, torch.Tensor):
+            value = value.detach().float().mean().item()
+        else:
+            value = float(value)
+        return value if math.isfinite(value) else None
 
     def process_infos(self, infos, done_indices) -> None:
         super().process_infos(infos, done_indices)
@@ -112,13 +134,25 @@ class SkillMimicAlgoObserver(IsaacAlgoObserver):
             value = infos.get(f"skillmimic/reward/{name}")
             if value is None:
                 continue
-            if isinstance(value, torch.Tensor):
-                value = value.detach().float().mean().item()
-            else:
-                value = float(value)
-            if math.isfinite(value):
+            value = self._finite_scalar(value)
+            if value is not None:
                 self._reward_term_sums[name] += value
                 self._reward_term_counts[name] += 1
+        for name in self.DIAGNOSTIC_MEANS:
+            value = infos.get(f"skillmimic/diagnostic/{name}")
+            if value is None:
+                continue
+            value = self._finite_scalar(value)
+            if value is not None:
+                self._diagnostic_sums[name] += value
+                self._diagnostic_counts[name] += 1
+        for name in self.TERMINATION_COUNTS:
+            value = infos.get(f"skillmimic/diagnostic/{name}")
+            if value is None:
+                continue
+            value = self._finite_scalar(value)
+            if value is not None:
+                self._termination_counts[name] += value
 
     def _print_reward_terms(self, epoch_num: int) -> None:
         values = []
@@ -134,6 +168,38 @@ class SkillMimicAlgoObserver(IsaacAlgoObserver):
                 flush=True,
             )
 
+    def _print_training_diagnostics(self, epoch_num: int) -> None:
+        values = {}
+        for name in self.DIAGNOSTIC_MEANS:
+            count = self._diagnostic_counts[name]
+            values[name] = self._diagnostic_sums[name] / count if count > 0 else math.nan
+            self._diagnostic_sums[name] = 0.0
+            self._diagnostic_counts[name] = 0
+
+        completed = self._termination_counts["completed_count"]
+        falls = self._termination_counts["fall_count"]
+        timeouts = self._termination_counts["timeout_count"]
+        other_failures = self._termination_counts["other_failure_count"]
+        for name in self.TERMINATION_COUNTS:
+            self._termination_counts[name] = 0.0
+
+        if completed > 0:
+            rates = (
+                f"fall_rate={falls / completed:.6f} "
+                f"timeout_rate={timeouts / completed:.6f} "
+                f"other_failure_rate={other_failures / completed:.6f}"
+            )
+        else:
+            rates = "fall_rate=<waiting> timeout_rate=<waiting> other_failure_rate=<waiting>"
+        print(
+            f"[SkillMimic Lab][training-diagnostics] epoch={epoch_num} "
+            f"completed_episodes={int(round(completed))} {rates} "
+            f"action_mean={values['action_mean']:.6f} "
+            f"action_std={values['action_std']:.6f} "
+            f"joint_tracking_rmse={values['joint_tracking_rmse']:.6f}rad",
+            flush=True,
+        )
+
     def after_print_stats(self, frame: int, epoch_num: int, total_time: float) -> None:
         super().after_print_stats(frame, epoch_num, total_time)
         if self.algo.game_rewards.current_size <= 0:
@@ -143,6 +209,7 @@ class SkillMimicAlgoObserver(IsaacAlgoObserver):
                 flush=True,
             )
             self._print_reward_terms(epoch_num)
+            self._print_training_diagnostics(epoch_num)
             return
 
         mean_reward = self.algo.game_rewards.get_mean().reshape(-1)[0].item()
@@ -153,10 +220,11 @@ class SkillMimicAlgoObserver(IsaacAlgoObserver):
             flush=True,
         )
         self._print_reward_terms(epoch_num)
+        self._print_training_diagnostics(epoch_num)
 
 
 class SkillMimicRlGamesVecEnvWrapper(RlGamesVecEnvWrapper):
-    """Adds the discrete action-space bridge missing from Isaac Lab 1.1's wrapper."""
+    """Adds the discrete action-space bridge missing from the stock wrapper."""
 
     def __init__(self, env, rl_device: str, clip_obs: float, clip_actions: float):
         super().__init__(env, rl_device, clip_obs, clip_actions)
@@ -175,14 +243,11 @@ def main() -> None:
     env_cfg = cfg_type()
     env_cfg.scene.num_envs = args.num_envs
     env_cfg.seed = args.seed + (app_launcher.global_rank if args.distributed else 0)
-    # Isaac Lab v1.1 exposes --device_id, while newer releases may expose
-    # --device. Keep the simulator and RL policy on the same selected device.
+    # Keep the simulator and RL policy on the same selected device.
     if args.distributed:
         device = f"cuda:{app_launcher.local_rank}"
     else:
-        device = getattr(args, "device", None)
-        if device is None:
-            device = f"cuda:{getattr(args, 'device_id', 0)}"
+        device = args.device
     env_cfg.sim.device = device
     if args.motion_path is not None:
         env_cfg.motion_path = os.path.abspath(args.motion_path)

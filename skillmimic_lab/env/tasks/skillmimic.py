@@ -8,18 +8,17 @@ import xml.etree.ElementTree as ET
 import torch
 import torch.nn.functional as F
 
-import omni.kit.commands
 import omni.usd
-from omni.isaac.core.utils.extensions import enable_extension
+from isaacsim.core.utils.extensions import enable_extension
 
-import omni.isaac.lab.sim as sim_utils
-from omni.isaac.lab.actuators import ImplicitActuatorCfg
-from omni.isaac.lab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
-from omni.isaac.lab.envs import DirectRLEnv, DirectRLEnvCfg
-from omni.isaac.lab.scene import InteractiveSceneCfg
-from omni.isaac.lab.sensors import ContactSensor, ContactSensorCfg
-from omni.isaac.lab.sim import PhysxCfg, SimulationCfg
-from omni.isaac.lab.utils import configclass
+import isaaclab.sim as sim_utils
+from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
+from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import ContactSensor, ContactSensorCfg
+from isaaclab.sim import PhysxCfg, SimulationCfg
+from isaaclab.utils import configclass
 
 from skillmimic_lab.utils import torch_utils as math_utils
 from skillmimic_lab.utils.motion_data_handler import MotionDataHandler
@@ -28,7 +27,6 @@ from skillmimic_lab.utils.motion_data_handler import MotionDataHandler
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 HUMANOID_MJCF = os.path.join(PROJECT_ROOT, "skillmimic", "data", "assets", "mjcf", "mocap_humanoid.xml")
 DEFAULT_MOTION_PATH = os.path.join(PROJECT_ROOT, "skillmimic", "data", "motions", "BallPlay-M")
-ROBOT_SOURCE_PRIM_PATH = "/World/envs/env_0/Robot"
 
 KEY_BODY_NAMES = [
     "Head", "L_Knee", "R_Knee", "L_Elbow", "R_Elbow", "L_Ankle", "R_Ankle",
@@ -64,62 +62,31 @@ def _mjcf_names(path: str, tag: str) -> list[str]:
     return [element.attrib["name"] for element in ET.parse(path).iter(tag) if "name" in element.attrib]
 
 
-def _import_humanoid_mjcf(path: str, prim_path: str) -> None:
-    """Import the humanoid with Isaac Sim 4.1's bundled MJCF importer.
+def _mjcf_joint_drive_parameters(path: str) -> dict[str, dict[str, float]]:
+    """Read the joint parameters that the legacy Isaac Gym MJCF importer used.
 
-    Isaac Lab 1.1 predates ``MjcfFileCfg``.  Importing into the source
-    environment before cloning provides the equivalent behavior without a
-    generated USD file in the repository.
+    The asset declares a default joint and then overrides the gains on each
+    named hinge.  Keeping this parser next to the runtime diagnostic makes it
+    possible to compare the source MJCF with the values that Sim 5.1 actually
+    placed on the PhysX articulation.
     """
 
-    enable_extension("omni.importer.mjcf")
-    status, import_config = omni.kit.commands.execute("MJCFCreateImportConfig")
-    if not status or import_config is None:
-        raise RuntimeError("Isaac Sim 4.1 could not create the MJCF import configuration")
+    root = ET.parse(path).getroot()
+    default_joint = root.find("./default/joint")
+    defaults = default_joint.attrib if default_joint is not None else {}
+    parameters: dict[str, dict[str, float]] = {}
+    for joint in root.iter("joint"):
+        name = joint.attrib.get("name")
+        if name is None:
+            continue
+        parameters[name] = {
+            key: float(joint.attrib.get(key, defaults.get(key, default)))
+            for key, default in (("stiffness", "0"), ("damping", "0"), ("armature", "0"))
+        }
+    return parameters
 
-    import_config.set_fix_base(False)
-    import_config.set_make_default_prim(False)
-    import_config.set_create_physics_scene(False)
-    import_config.set_import_inertia_tensor(True)
-    import_config.set_import_sites(False)
-    import_config.set_self_collision(True)
-    import_config.set_merge_fixed_joints(False)
 
-    status, _ = omni.kit.commands.execute(
-        "MJCFCreateAsset",
-        mjcf_path=path,
-        import_config=import_config,
-        prim_path=prim_path,
-    )
-    if not status:
-        raise RuntimeError(f"Isaac Sim 4.1 failed to import the humanoid MJCF: {path}")
-
-    # The source MJCF contains a world-level floor geom. The 4.1 importer turns
-    # it into a second articulation named ``worldBody`` next to the humanoid.
-    # We provide one global local ground below, so remove this duplicate before
-    # cloning environments and target only the Pelvis articulation.
-    stage = omni.usd.get_context().get_stage()
-    stage.RemovePrim(f"{prim_path}/worldBody")
-    articulation_prim_path = f"{prim_path}/Pelvis"
-
-    sim_utils.modify_rigid_body_properties(
-        articulation_prim_path,
-        sim_utils.RigidBodyPropertiesCfg(
-            disable_gravity=False,
-            angular_damping=0.01,
-            max_angular_velocity=100.0,
-            max_depenetration_velocity=10.0,
-        ),
-    )
-    sim_utils.modify_articulation_root_properties(
-        articulation_prim_path,
-        sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True,
-            solver_position_iteration_count=4,
-            solver_velocity_iteration_count=0,
-        ),
-    )
-    sim_utils.activate_contact_sensors(articulation_prim_path)
+MJCF_JOINT_DRIVE_PARAMETERS = _mjcf_joint_drive_parameters(HUMANOID_MJCF)
 
 
 @configclass
@@ -131,9 +98,9 @@ class SkillMimicBallPlayEnvCfg(DirectRLEnvCfg):
     # control step. Isaac Lab expresses that as 120 Hz physics with a
     # decimation of two.
     decimation = 2
-    num_actions = 156
-    num_observations = 902
-    num_states = 0
+    action_space = 156
+    observation_space = 902
+    state_space = 0
 
     condition_size = 64
     motion_path = DEFAULT_MOTION_PATH
@@ -147,7 +114,6 @@ class SkillMimicBallPlayEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 120.0,
         render_interval=decimation,
-        disable_contact_processing=True,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             static_friction=1.0,
             dynamic_friction=1.0,
@@ -171,8 +137,27 @@ class SkillMimicBallPlayEnvCfg(DirectRLEnvCfg):
     )
 
     robot: ArticulationCfg = ArticulationCfg(
-        prim_path="/World/envs/env_.*/Robot/Pelvis",
-        spawn=None,
+        prim_path="/World/envs/env_.*/Robot",
+        articulation_root_prim_path="/Pelvis/Pelvis",
+        spawn=sim_utils.MjcfFileCfg(
+            asset_path=HUMANOID_MJCF,
+            fix_base=False,
+            import_inertia_tensor=True,
+            import_sites=False,
+            self_collision=True,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                disable_gravity=False,
+                angular_damping=0.01,
+                max_angular_velocity=100.0,
+                max_depenetration_velocity=10.0,
+            ),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                enabled_self_collisions=True,
+                solver_position_iteration_count=4,
+                solver_velocity_iteration_count=0,
+            ),
+            activate_contact_sensors=True,
+        ),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.89),
             rot=(1.0, 0.0, 0.0, 0.0),
@@ -182,9 +167,31 @@ class SkillMimicBallPlayEnvCfg(DirectRLEnvCfg):
         actuators={
             "body": ImplicitActuatorCfg(
                 joint_names_expr=[".*"],
-                stiffness=None,
-                damping=None,
-                velocity_limit=100.0,
+                # Isaac Sim 5.1's MJCF importer converts the source hinge
+                # gains by 180/pi before writing the USD angular drives. The
+                # PhysX tensor API used by Isaac Lab expects the legacy
+                # N*m/rad gains directly, so override the imported values.
+                stiffness={
+                    name: parameters["stiffness"]
+                    for name, parameters in MJCF_JOINT_DRIVE_PARAMETERS.items()
+                },
+                damping={
+                    name: parameters["damping"]
+                    for name, parameters in MJCF_JOINT_DRIVE_PARAMETERS.items()
+                },
+                armature={
+                    name: parameters["armature"]
+                    for name, parameters in MJCF_JOINT_DRIVE_PARAMETERS.items()
+                },
+                # Every legacy MJCF motor has ctrlrange [-1, 1] and gear 500.
+                # Sim 5.1 imports the corresponding drive max-force as zero,
+                # which prevents the position controller from reproducing the
+                # Isaac Gym task. Set the legacy motor limit explicitly.
+                effort_limit_sim=500.0,
+                velocity_limit_sim=100.0,
+                friction=0.0,
+                dynamic_friction=0.0,
+                viscous_friction=0.0,
             )
         },
     )
@@ -242,8 +249,6 @@ class SkillMimicBallPlayEnv(DirectRLEnv):
             0, self._joint_ids_legacy_order
         ].clone()
         self.actions = torch.zeros((self.num_envs, 156), device=self.device)
-        self._reset_joint_targets = torch.zeros_like(self.actions)
-        self._reset_target_substeps = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
 
         self.motion_data = MotionDataHandler(
             motion_path=self.cfg.motion_path,
@@ -272,8 +277,17 @@ class SkillMimicBallPlayEnv(DirectRLEnv):
         self._joint_diagnostic_pending = True
 
     def _setup_scene(self) -> None:
-        _import_humanoid_mjcf(HUMANOID_MJCF, ROBOT_SOURCE_PRIM_PATH)
+        enable_extension("isaacsim.asset.importer.mjcf")
         self.robot = Articulation(self.cfg.robot)
+        # The source MJCF contains a world-level floor geom. The importer turns
+        # it into a second articulation next to the humanoid. A local ground is
+        # provided below, so remove the duplicate before cloning environments.
+        world_body = omni.usd.get_context().get_stage().GetPrimAtPath(
+            "/World/envs/env_0/Robot/worldBody"
+        )
+        if world_body.IsValid():
+            world_body.SetActive(False)
+        sim_utils.activate_contact_sensors("/World/envs/env_0/Robot")
         self.ball = RigidObject(self.cfg.ball)
         self.robot_contact_sensor = ContactSensor(self.cfg.robot_contact_sensor)
         self.ball_contact_sensor = ContactSensor(self.cfg.ball_contact_sensor)
@@ -331,6 +345,97 @@ class SkillMimicBallPlayEnv(DirectRLEnv):
             )
         self._contact_force_order = [contact_bodies.index(name) for name in expected_bodies]
 
+    def print_physics_parameter_report(self) -> None:
+        """Print source-MJCF versus live-PhysX joint drive parameters."""
+
+        expected = _mjcf_joint_drive_parameters(HUMANOID_MJCF)
+        names = _mjcf_names(HUMANOID_MJCF, "joint")
+
+        def legacy_order(values: torch.Tensor) -> torch.Tensor:
+            return values[0, self._joint_ids_legacy_order].detach().float()
+
+        actual = {
+            "stiffness": legacy_order(self.robot.data.default_joint_stiffness),
+            "damping": legacy_order(self.robot.data.default_joint_damping),
+            "armature": legacy_order(self.robot.data.default_joint_armature),
+            "effort_limit": legacy_order(self.robot.data.joint_effort_limits),
+            "velocity_limit": legacy_order(self.robot.data.joint_vel_limits),
+            "static_friction": legacy_order(self.robot.data.default_joint_friction_coeff),
+        }
+        expected_tensors = {
+            parameter: torch.tensor(
+                [expected[name][parameter] for name in names],
+                device=values.device,
+                dtype=values.dtype,
+            )
+            for parameter, values in actual.items()
+            if parameter in ("stiffness", "damping", "armature")
+        }
+
+        print(
+            "[SkillMimic Lab][physics-parameters] "
+            f"physics_dt={self.physics_dt:.9f}s control_dt={self.step_dt:.9f}s "
+            f"decimation={self.cfg.decimation} joints={len(names)}",
+            flush=True,
+        )
+        for parameter, values in actual.items():
+            finite = values[torch.isfinite(values)]
+            if finite.numel() == 0:
+                value_range = "all_non_finite"
+            else:
+                unique = torch.unique(finite)
+                if unique.numel() <= 12:
+                    value_range = f"values={unique.cpu().tolist()}"
+                else:
+                    value_range = f"min={finite.min().item():.6g} max={finite.max().item():.6g}"
+            print(
+                f"[SkillMimic Lab][physics-parameters] {parameter} {value_range}",
+                flush=True,
+            )
+            source_values = expected_tensors.get(parameter)
+            if source_values is None:
+                continue
+            error = torch.abs(values - source_values)
+            mismatch = error > (1.0e-5 + 1.0e-5 * torch.abs(source_values))
+            worst_ids = torch.topk(error, k=min(5, len(names))).indices
+            worst = ", ".join(
+                f"{names[index]}:source={source_values[index].item():.6g},"
+                f"sim={values[index].item():.6g}"
+                for index in worst_ids.cpu().tolist()
+            )
+            print(
+                "[SkillMimic Lab][physics-parameters] "
+                f"{parameter}_source_mismatches={int(mismatch.sum().item())}/{len(names)} "
+                f"worst=[{worst}]",
+                flush=True,
+            )
+
+    def reference_actions(self, frame_offset: int = 1) -> torch.Tensor:
+        """Return normalized PD targets for a future frame of the active mocap."""
+
+        frame = torch.minimum(
+            self.episode_length_buf + frame_offset,
+            self.motion_data.envid2episode_lengths - 1,
+        )
+        frame = torch.clamp(frame, min=0, max=self.max_episode_length - 1)
+        env_ids = torch.arange(self.num_envs, device=self.device)
+        joint_targets = self.reference_hoi[env_ids, frame, 6:162]
+        scale = torch.where(torch.abs(self.action_scale) > 1.0e-8, self.action_scale, 1.0)
+        return torch.clamp((joint_targets - self.action_offset) / scale, -1.0, 1.0)
+
+    def reference_tracking_error(self) -> torch.Tensor:
+        """Return wrapped per-joint error against the current reward frame."""
+
+        frame = torch.minimum(
+            self.episode_length_buf,
+            self.motion_data.envid2episode_lengths - 1,
+        )
+        frame = torch.clamp(frame, min=0, max=self.max_episode_length - 1)
+        env_ids = torch.arange(self.num_envs, device=self.device)
+        joint_pos, _ = self._legacy_joint_state()
+        error = joint_pos - self.reference_hoi[env_ids, frame, 6:162]
+        return torch.atan2(torch.sin(error), torch.cos(error))
+
     def _robot_contact_forces(self) -> torch.Tensor:
         return self.robot_contact_sensor.data.net_forces_w[:, self._contact_force_order]
 
@@ -345,10 +450,6 @@ class SkillMimicBallPlayEnv(DirectRLEnv):
 
     def _apply_action(self) -> None:
         targets_legacy = self.action_offset + self.action_scale * self.actions
-        hold_initial_target = self._reset_target_substeps > 0
-        if torch.any(hold_initial_target):
-            targets_legacy[hold_initial_target] = self._reset_joint_targets[hold_initial_target]
-            self._reset_target_substeps[hold_initial_target] -= 1
         self.robot.set_joint_position_target(targets_legacy[:, self._joint_ids_sim_order])
 
     def _local_body_state(self):
@@ -384,10 +485,8 @@ class SkillMimicBallPlayEnv(DirectRLEnv):
         """Write a legacy Pelvis root state through PhysX's imported root.
 
         Isaac Gym treated the MJCF ``Pelvis`` free joint as the actor root.
-        Isaac Sim 4.1's MJCF importer instead exposes ``Chest`` as the PhysX
-        articulation root for this asset.  Root tensor writes therefore need
-        to preserve the current root-to-Pelvis transform rather than assigning
-        the legacy Pelvis pose directly to the imported root.
+        Preserve the current articulation-root-to-Pelvis transform so this is
+        robust to root-frame choices made by different Isaac Sim importers.
         """
 
         target_pelvis_pos = root_pos + self.scene.env_origins[env_ids]
@@ -563,7 +662,7 @@ class SkillMimicBallPlayEnv(DirectRLEnv):
         )
         print(f"[SkillMimic Lab][joint-check] worst_joints={worst_joints}", flush=True)
         root_link_mean = root_link_delta.mean(dim=0)
-        root_link_std = root_link_delta.std(dim=0)
+        root_link_std = root_link_delta.std(dim=0, unbiased=False)
         print(
             "[SkillMimic Lab][joint-check] "
             f"pelvis_articulation_root_mean={root_link_mean.detach().cpu().tolist()} "
@@ -599,7 +698,7 @@ class SkillMimicBallPlayEnv(DirectRLEnv):
             self.episode_length_buf,
         )
         # An articulation reset writes the new root/joint state directly to
-        # PhysX, but Isaac Lab 1.1 can retain the pre-reset child-body cache
+        # PhysX, but Isaac Lab can retain the pre-reset child-body cache
         # until the next physics update. If the old state contained NaNs, do
         # not expose that one stale frame to the policy.
         finite_observation = torch.isfinite(observation).all(dim=-1)
@@ -638,6 +737,28 @@ class SkillMimicBallPlayEnv(DirectRLEnv):
         frame = torch.clamp(frame, min=0, max=self.max_episode_length - 1)
         env_ids = torch.arange(self.num_envs, device=self.device)
         reference = self.reference_hoi[env_ids, frame]
+
+        # Measure controller behavior against the exact reference frame used
+        # by the reward. These values are sampled every environment step and
+        # aggregated by the RL-Games observer once per training epoch.
+        joint_delta = joint_pos - reference[:, 6:162]
+        joint_delta = torch.atan2(torch.sin(joint_delta), torch.cos(joint_delta))
+        finite_joint_delta = joint_delta[torch.isfinite(joint_delta)]
+        if finite_joint_delta.numel() > 0:
+            joint_tracking_rmse = finite_joint_delta.square().mean().sqrt()
+        else:
+            joint_tracking_rmse = torch.zeros((), device=self.device)
+        finite_actions = self.actions[torch.isfinite(self.actions)]
+        if finite_actions.numel() > 0:
+            action_mean = finite_actions.mean()
+            action_std = finite_actions.std(unbiased=False)
+        else:
+            action_mean = torch.zeros((), device=self.device)
+            action_std = torch.zeros((), device=self.device)
+        self.extras["skillmimic/diagnostic/action_mean"] = action_mean
+        self.extras["skillmimic/diagnostic/action_std"] = action_std
+        self.extras["skillmimic/diagnostic/joint_tracking_rmse"] = joint_tracking_rmse
+
         reward, reward_terms = compute_imitation_reward(
             reference,
             self.current_hoi,
@@ -711,11 +832,22 @@ class SkillMimicBallPlayEnv(DirectRLEnv):
                 )
         if self.cfg.early_termination:
             root_height = self.robot.data.body_pos_w[:, self._legacy_root_body_id, 2]
-            terminated = (root_height < self.cfg.termination_height) & (self.episode_length_buf > 1)
+            fell = (root_height < self.cfg.termination_height) & (self.episode_length_buf > 1)
         else:
-            terminated = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
-        terminated |= self._non_finite_state
+            fell = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        terminated = fell | self._non_finite_state
         time_out = self.episode_length_buf >= self.motion_data.envid2episode_lengths - 1
+
+        # Timeout takes precedence if a height failure occurs on the natural
+        # final frame, keeping the episode classifications mutually exclusive.
+        fall_only = fell & ~time_out
+        timeout_only = time_out
+        done = terminated | time_out
+        other_failure = done & ~fall_only & ~timeout_only
+        self.extras["skillmimic/diagnostic/completed_count"] = done.sum()
+        self.extras["skillmimic/diagnostic/fall_count"] = fall_only.sum()
+        self.extras["skillmimic/diagnostic/timeout_count"] = timeout_only.sum()
+        self.extras["skillmimic/diagnostic/other_failure_count"] = other_failure.sum()
         return terminated, time_out
 
     def _reset_idx(self, env_ids: torch.Tensor | None) -> None:
@@ -760,14 +892,12 @@ class SkillMimicBallPlayEnv(DirectRLEnv):
         # On the GPU tensor backend, set_dof_positions() does not immediately
         # propagate the new joint coordinates to the child-link transforms.
         # Isaac Sim's own PhysX tensor test explicitly performs this update
-        # before reading get_link_transforms().  Isaac Lab 1.1 omits both this
+        # before reading get_link_transforms(). Some Isaac Lab versions omit both this
         # update and the lazy-buffer invalidation in its state writers.
         self._write_legacy_root_state_to_sim(
             env_ids, root_pos, root_rot, root_lin_vel, root_ang_vel
         )
-        self._reset_joint_targets[env_ids] = joint_pos
         self._initial_joint_pos[env_ids] = joint_pos
-        self._reset_target_substeps[env_ids] = self.cfg.decimation
 
         ball_pose = torch.cat((ball_pos + self.scene.env_origins[env_ids], math_utils.xyzw_to_wxyz(ball_rot)), dim=-1)
         ball_velocity = torch.cat((ball_lin_vel, ball_ang_vel), dim=-1)
